@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
+from flask import render_template
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///network_data.db'
@@ -8,7 +9,10 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-# Database model
+# ────────────────────────────────────────────
+# DATABASE MODELS
+# ────────────────────────────────────────────
+
 class CellData(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     operator = db.Column(db.String(50))
@@ -19,34 +23,38 @@ class CellData(db.Model):
     cell_id = db.Column(db.String(50))
     timestamp = db.Column(db.DateTime)
 
-# Initialize the database
+class DeviceLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    ip_address = db.Column(db.String(50), unique=True)
+    last_seen = db.Column(db.DateTime)
+
 with app.app_context():
     db.create_all()
 
-# Test route
+# ────────────────────────────────────────────
+# ROUTES
+# ────────────────────────────────────────────
+
 @app.route("/")
 def index():
     return "Network Cell Analyzer Backend is Running"
 
-# POST endpoint to receive data
 @app.route('/receive-data', methods=['POST'])
 def receive_data():
     data = request.get_json()
 
     try:
-        # Extract data from request
+        # Extract fields
         operator = data['operator']
         signal_power = int(data['signal_power'])
-        snr = float(data.get('snr', 0.0))  # Optional
+        snr = float(data.get('snr', 0.0))
         network_type = data['network_type']
         band = data.get('band', "N/A")
         cell_id = data['cell_id']
         timestamp_str = data['timestamp']
-
-        # Convert timestamp
         timestamp = datetime.strptime(timestamp_str, "%d %b %Y %I:%M %p")
 
-        # Create DB record
+        # Save to CellData table
         new_entry = CellData(
             operator=operator,
             signal_power=signal_power,
@@ -57,6 +65,16 @@ def receive_data():
             timestamp=timestamp
         )
         db.session.add(new_entry)
+
+        # Log IP address
+        client_ip = request.remote_addr
+        now = datetime.utcnow()
+        existing_device = DeviceLog.query.filter_by(ip_address=client_ip).first()
+        if existing_device:
+            existing_device.last_seen = now
+        else:
+            db.session.add(DeviceLog(ip_address=client_ip, last_seen=now))
+
         db.session.commit()
 
         return jsonify({"message": "Data received successfully"}), 201
@@ -64,7 +82,6 @@ def receive_data():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
-# GET endpoint to return statistics between two timestamps
 @app.route('/get-stats', methods=['GET'])
 def get_stats():
     try:
@@ -80,35 +97,20 @@ def get_stats():
             return jsonify({"message": "No data found in this range"}), 404
 
         total = len(records)
-
-        # Grouping & Averages
         operator_counts = {}
         network_counts = {}
         signal_per_network = {}
         snr_per_network = {}
-        signal_per_device = {}  # Assuming all from one device for now
+        signal_per_device = {"default_device": []}  # One device for now
 
         for record in records:
-            # Count by operator
             operator_counts[record.operator] = operator_counts.get(record.operator, 0) + 1
-
-            # Count by network type
             network_counts[record.network_type] = network_counts.get(record.network_type, 0) + 1
 
-            # Avg signal power per network type
-            if record.network_type not in signal_per_network:
-                signal_per_network[record.network_type] = []
-            signal_per_network[record.network_type].append(record.signal_power)
+            signal_per_network.setdefault(record.network_type, []).append(record.signal_power)
+            snr_per_network.setdefault(record.network_type, []).append(record.snr)
+            signal_per_device["default_device"].append(record.signal_power)
 
-            # Avg SNR per network type
-            if record.network_type not in snr_per_network:
-                snr_per_network[record.network_type] = []
-            snr_per_network[record.network_type].append(record.snr)
-
-            # Avg signal per device (we'll just assume 1 device, otherwise add a device_id field)
-            signal_per_device.setdefault("default_device", []).append(record.signal_power)
-
-        # Format final results
         stats = {
             "connectivity_per_operator": {
                 k: f"{round(v / total * 100, 2)}%" for k, v in operator_counts.items()
@@ -117,13 +119,13 @@ def get_stats():
                 k: f"{round(v / total * 100, 2)}%" for k, v in network_counts.items()
             },
             "avg_signal_per_network_type": {
-                k: round(sum(v)/len(v), 2) for k, v in signal_per_network.items()
+                k: round(sum(v) / len(v), 2) for k, v in signal_per_network.items()
             },
             "avg_snr_per_network_type": {
-                k: round(sum(v)/len(v), 2) for k, v in snr_per_network.items()
+                k: round(sum(v) / len(v), 2) for k, v in snr_per_network.items()
             },
             "avg_signal_per_device": {
-                k: round(sum(v)/len(v), 2) for k, v in signal_per_device.items()
+                k: round(sum(v) / len(v), 2) for k, v in signal_per_device.items()
             }
         }
 
@@ -131,6 +133,21 @@ def get_stats():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+@app.route('/central-stats')
+def central_stats():
+    devices = DeviceLog.query.all()
+    device_list = [
+        {
+            "ip": d.ip_address,
+            "last_seen": d.last_seen.strftime("%d %b %Y %I:%M %p")
+        } for d in devices
+    ]
+    return render_template('central_stats.html', total_devices=len(devices), devices=device_list)
+
+# ────────────────────────────────────────────
+# RUN
+# ────────────────────────────────────────────
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000, debug=True)
