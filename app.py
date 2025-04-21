@@ -1,13 +1,18 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
-from flask import render_template
+import pytz
+
+# ────────────────────────────────────────────
+# APP CONFIGURATION
+# ────────────────────────────────────────────
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///network_data.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
+lebanon_tz = pytz.timezone("Asia/Beirut")
 
 # ────────────────────────────────────────────
 # DATABASE MODELS
@@ -52,7 +57,10 @@ def receive_data():
         band = data.get('band', "N/A")
         cell_id = data['cell_id']
         timestamp_str = data['timestamp']
-        timestamp = datetime.strptime(timestamp_str, "%d %b %Y %I:%M %p")
+
+        # Convert timestamp to UTC
+        timestamp_local = lebanon_tz.localize(datetime.strptime(timestamp_str, "%d %b %Y %I:%M %p"))
+        timestamp_utc = timestamp_local.astimezone(pytz.utc)
 
         # Save to CellData table
         new_entry = CellData(
@@ -62,18 +70,19 @@ def receive_data():
             network_type=network_type,
             band=band,
             cell_id=cell_id,
-            timestamp=timestamp
+            timestamp=timestamp_utc
         )
         db.session.add(new_entry)
 
-        # Log IP address
-        client_ip = request.remote_addr
-        now = datetime.utcnow()
+        # Get client IP (works behind proxies like Render)
+        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
+        now_utc = datetime.utcnow()
+
         existing_device = DeviceLog.query.filter_by(ip_address=client_ip).first()
         if existing_device:
-            existing_device.last_seen = now
+            existing_device.last_seen = now_utc
         else:
-            db.session.add(DeviceLog(ip_address=client_ip, last_seen=now))
+            db.session.add(DeviceLog(ip_address=client_ip, last_seen=now_utc))
 
         db.session.commit()
 
@@ -88,10 +97,15 @@ def get_stats():
         start_str = request.args.get('start')
         end_str = request.args.get('end')
 
-        start_time = datetime.strptime(start_str, "%d %b %Y %I:%M %p")
-        end_time = datetime.strptime(end_str, "%d %b %Y %I:%M %p")
+        # Parse user-supplied times (assumed to be in Lebanon local time)
+        start_local = lebanon_tz.localize(datetime.strptime(start_str, "%d %b %Y %I:%M %p"))
+        end_local = lebanon_tz.localize(datetime.strptime(end_str, "%d %b %Y %I:%M %p"))
 
-        records = CellData.query.filter(CellData.timestamp >= start_time, CellData.timestamp <= end_time).all()
+        # Convert to UTC to match stored DB timestamps
+        start_utc = start_local.astimezone(pytz.utc)
+        end_utc = end_local.astimezone(pytz.utc)
+
+        records = CellData.query.filter(CellData.timestamp >= start_utc, CellData.timestamp <= end_utc).all()
 
         if not records:
             return jsonify({"message": "No data found in this range"}), 404
@@ -140,7 +154,7 @@ def central_stats():
     device_list = [
         {
             "ip": d.ip_address,
-            "last_seen": d.last_seen.strftime("%d %b %Y %I:%M %p")
+            "last_seen": d.last_seen.astimezone(lebanon_tz).strftime("%d %b %Y %I:%M %p")
         } for d in devices
     ]
     return render_template('central_stats.html', total_devices=len(devices), devices=device_list)
