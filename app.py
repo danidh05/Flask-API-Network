@@ -9,6 +9,7 @@ Flask backend for the Network Cell Analyzer
 
 from flask import Flask, request, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 from datetime import datetime
 import pytz
 
@@ -49,7 +50,7 @@ with app.app_context():
     # If the user forgot to run ALTER TABLE, add device_id automatically
     col_names = [
         row[1]
-        for row in db.session.execute("PRAGMA table_info(cell_data)").fetchall()
+        for row in db.session.execute(text("PRAGMA table_info(cell_data)")).fetchall()
     ]
     if "device_id" not in col_names:
         db.session.execute("ALTER TABLE cell_data ADD COLUMN device_id VARCHAR(64)")
