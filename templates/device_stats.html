@@ -47,12 +47,19 @@
             </tr>
         </thead>
         <tbody>
-            {% for k, v in data.items() if data is mapping else [(section, data)] %}
+            {% if data is mapping %}
+            {% for k, v in data.items() %}
             <tr>
                 <td>{{ k }}</td>
                 <td>{{ v }}</td>
             </tr>
             {% endfor %}
+            {% else %}
+            <tr>
+                <td>{{ section }}</td>
+                <td>{{ data }}</td>
+            </tr>
+            {% endif %}
         </tbody>
     </table><br>
     {% endfor %}
