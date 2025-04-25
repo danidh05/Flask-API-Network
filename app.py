@@ -39,6 +39,7 @@ class CellData(db.Model):
 class DeviceLog(db.Model):
     id         = db.Column(db.Integer, primary_key=True)
     ip_address = db.Column(db.String(50), unique=True)
+    device_id  = db.Column(db.String(64))
     last_seen  = db.Column(db.DateTime)
 
 # ───────────────────────────────────────
@@ -56,6 +57,64 @@ with app.app_context():
         db.session.execute("ALTER TABLE cell_data ADD COLUMN device_id VARCHAR(64)")
         db.session.commit()
         print("➕  Added missing column `device_id` to cell_data")
+
+
+# ───────────────────────────────────────
+# HELPER UTILS (return dict, code)
+# ───────────────────────────────────────
+def _to_utc(ds, default):
+    if not ds:
+        return default
+    return lebanon_tz.localize(datetime.strptime(ds, "%d %b %Y %I:%M %p")).astimezone(pytz.utc)
+
+def get_stats_inner(device_id, start=None, end=None):
+    first = db.session.query(db.func.min(CellData.timestamp)).scalar()
+    last  = db.session.query(db.func.max(CellData.timestamp)).scalar()
+    if first is None:
+        return {"message":"No data"},404
+
+    s,e = _to_utc(start,first), _to_utc(end,last)
+    if e < s:
+        return {"error":"End date must be after start date"},400
+
+    rows = (CellData.query.filter_by(device_id=device_id)
+            .filter(CellData.timestamp.between(s,e)).all())
+    if not rows:
+        return {"message":"No data"},404
+
+    total=len(rows); op_cnt={}; net_cnt={}; sig_net={}; snr_net={}; sig_dev=[]
+    for r in rows:
+        op_cnt[r.operator]=op_cnt.get(r.operator,0)+1
+        net_cnt[r.network_type]=net_cnt.get(r.network_type,0)+1
+        sig_net.setdefault(r.network_type,[]).append(r.signal_power)
+        snr_net.setdefault(r.network_type,[]).append(r.snr)
+        sig_dev.append(r.signal_power)
+
+    return {
+        "connectivity_per_operator":{k:f"{round(v/total*100,2)}%" for k,v in op_cnt.items()},
+        "connectivity_per_network_type":{k:f"{round(v/total*100,2)}%" for k,v in net_cnt.items()},
+        "avg_signal_per_network_type":{k:round(sum(v)/len(v),2) for k,v in sig_net.items()},
+        "avg_snr_per_network_type":{k:round(sum(v)/len(v),2) for k,v in snr_net.items()},
+        "avg_signal_device":round(sum(sig_dev)/len(sig_dev),2),
+    },200
+
+def avg_all_inner(start=None, end=None):
+    first = db.session.query(db.func.min(CellData.timestamp)).scalar()
+    last  = db.session.query(db.func.max(CellData.timestamp)).scalar()
+    if first is None:
+        return {"message":"No data"},404
+
+    s,e = _to_utc(start,first), _to_utc(end,last)
+    if e < s:
+        return {"error":"End date must be after start date"},400
+
+    avg_sig,avg_snr = (CellData.query.with_entities(
+        db.func.avg(CellData.signal_power), db.func.avg(CellData.snr))
+        .filter(CellData.timestamp.between(s,e)).first())
+    return {
+        "avg_signal_all_devices":round(avg_sig or 0,2),
+        "avg_snr_all_devices":round(avg_snr or 0,2)
+    },200
 
 # ───────────────────────────────────────
 # ROUTES
@@ -95,14 +154,15 @@ def receive_data():
             )
         )
 
-        # update “online devices” table (dashboard)
+        # update "online devices" table (dashboard)
         client_ip = request.headers.get("X-Forwarded-For", request.remote_addr).split(",")[0]
         now_utc   = datetime.utcnow()
         dev = DeviceLog.query.filter_by(ip_address=client_ip).first()
         if dev:
             dev.last_seen = now_utc
+            dev.device_id = device_id  # Update device_id
         else:
-            db.session.add(DeviceLog(ip_address=client_ip, last_seen=now_utc))
+            db.session.add(DeviceLog(ip_address=client_ip, device_id=device_id, last_seen=now_utc))
 
         db.session.commit()
         return jsonify({"message": "Data received"}), 201
@@ -229,6 +289,7 @@ def central_stats():
             "last_seen": d.last_seen.astimezone(lebanon_tz).strftime(
                 "%d %b %Y %I:%M %p"
             ),
+            "device_id": d.ip_address  # Use IP as device_id for now
         }
         for d in devices
     ]
@@ -246,7 +307,25 @@ def device_stats_page():
         # call the existing global-avg logic
         stats = avg_all_inner(start, end)     # helper returns dict
     else:
-        stats = get_stats_inner(device_id, start, end)  # helper returns dict
+        # Try to find data using device_id directly
+        data = CellData.query.filter_by(device_id=device_id).first()
+        
+        if data:
+            # If we found data directly with device_id
+            stats = get_stats_inner(device_id, start, end)
+        else:
+            # Try to find device_id based on IP
+            device_log = DeviceLog.query.filter_by(ip_address=device_id).first()
+            if device_log and device_log.device_id:
+                # Use the stored device_id from the log
+                stats = get_stats_inner(device_log.device_id, start, end)
+            else:
+                # Last resort - use most recent data
+                recent_data = CellData.query.order_by(CellData.timestamp.desc()).first()
+                if recent_data:
+                    stats = get_stats_inner(recent_data.device_id, start, end)
+                else:
+                    stats = ({"error": "No data available for this device"}, 404)
 
     if isinstance(stats, tuple):  # existing helpers return (json, code)
         stats, code = stats
