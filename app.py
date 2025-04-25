@@ -236,6 +236,25 @@ def central_stats():
         "central_stats.html", total_devices=len(devices), devices=device_list
     )
 
+@app.route("/device-stats")
+def device_stats_page():
+    device_id = request.args.get("device_id")
+    start = request.args.get("start")
+    end   = request.args.get("end")
+
+    if device_id == "global":
+        # call the existing global-avg logic
+        stats = avg_all_inner(start, end)     # helper returns dict
+    else:
+        stats = get_stats_inner(device_id, start, end)  # helper returns dict
+
+    if isinstance(stats, tuple):  # existing helpers return (json, code)
+        stats, code = stats
+        if code != 200:
+            return f"<h1>Error: {stats.get('error') or stats.get('message')}</h1>", code
+
+    return render_template("device_stats.html", stats=stats, device=device_id)
+
 # ───────────────────────────────────────
 # MAIN
 # ───────────────────────────────────────

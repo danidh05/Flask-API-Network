@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>Stats for {{ device }}</title>
+    <style>
+        body {
+            font-family: Arial;
+            padding: 30px;
+            background: #fafafa
+        }
+
+        h1 {
+            color: #2c3e50
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 60%
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left
+        }
+
+        th {
+            background: #2c3e50;
+            color: #fff
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Statistics – {{ "All Devices" if device=="global" else device }}</h1>
+
+    {% for section, data in stats.items() %}
+    <h3>{{ section.replace('_',' ').title() }}</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Key</th>
+                <th>Value</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for k, v in data.items() if data is mapping else [(section, data)] %}
+            <tr>
+                <td>{{ k }}</td>
+                <td>{{ v }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table><br>
+    {% endfor %}
+</body>
+
+</html>

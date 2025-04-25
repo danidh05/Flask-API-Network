@@ -55,6 +55,7 @@
             <tr>
                 <th>IP Address</th>
                 <th>Last Seen</th>
+                <th>Stats</th>
             </tr>
         </thead>
         <tbody>
@@ -62,6 +63,7 @@
             <tr>
                 <td>{{ device.ip }}</td>
                 <td>{{ device.last_seen }}</td>
+                <td><a href="/device-stats?device_id={{ device.ip }}">View</a></td>
             </tr>
             {% endfor %}
         </tbody>
